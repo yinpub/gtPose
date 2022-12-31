@@ -142,39 +142,17 @@ double gpsAltitudeInitOffset = 0.0;
 double recentOptimizedX = 0.0;
 double recentOptimizedY = 0.0;
 int prev_key_node_idx;//记录上一个关键帧对应的普通帧向量所在的位置
-ros::Publisher pubMapAftPGO, pubOdomAftPGO, pubPathAftPGO;
-ros::Publisher pubLoopScanLocal, pubLoopSubmapLocal;
-ros::Publisher pubOdomRepubVerifier;
+
 
 std::string save_directory;
 std::string pgKITTIformat, pgScansDirectory, pgSCDsDirectory;
 std::string odomKITTIformat;
-std::fstream pgG2oSaveStream, pgTimeSaveStream;
+std::fstream  pgTimeSaveStream;
 
-std::vector<std::string> edges_str; //向量，存储了各个边的信息 used in writeEdge
+
 
 int sequencenum;
-//*)保存新加入边的信息
-//输入：
-//  _node_idx_pair:上一关键帧的索引
-//  _node_idx_pair:当前关键帧的索引
-//  _relPose:两关键帧的相对运动
-//  edges_str:向量，保存在全局区，记录了历史边的信息
-void writeEdge(const std::pair<int, int> _node_idx_pair, const gtsam::Pose3& _relPose, std::vector<std::string>& edges_str)
-{
-    //1.获取位移和旋转
-    gtsam::Point3 t = _relPose.translation();
-    gtsam::Rot3 R = _relPose.rotation();
-    //2.保存相对运动到字符串变量中
-    std::string curEdgeInfo {
-        "EDGE_SE3:QUAT " + std::to_string(_node_idx_pair.first) + " " + std::to_string(_node_idx_pair.second) + " "
-        + std::to_string(t.x()) + " " + std::to_string(t.y()) + " " + std::to_string(t.z())  + " " 
-        + std::to_string(R.toQuaternion().x()) + " " + std::to_string(R.toQuaternion().y()) + " " 
-        + std::to_string(R.toQuaternion().z()) + " " + std::to_string(R.toQuaternion().w()) };
 
-    //3.将字符串变量保存到字符串向量中 pgEdgeSaveStream << curEdgeInfo << std::endl;
-    edges_str.emplace_back(curEdgeInfo);
-}
 
 //*)转换位姿格式
 //输入：
@@ -186,29 +164,7 @@ gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p)
 } // Pose6DtoGTSAMPose3
 
 
-//*)
-//输入：
-//  _filename：保存的路径
-void saveOdometryVerticesKITTIformat(std::string _filename)
-{
-    //1.生成读写对象
-    std::fstream stream(_filename.c_str(), std::fstream::out);
-    //2.遍历关键帧向量
-    for(const auto& _pose6d: keyframePoses) {
-        //2.1取出位姿
-        gtsam::Pose3 pose = Pose6DtoGTSAMPose3(_pose6d);
-        //2.2分成两个部分
-        Point3 t = pose.translation();
-        Rot3 R = pose.rotation();
-        auto col1 = R.column(1); // Point3
-        auto col2 = R.column(2); // Point3
-        auto col3 = R.column(3); // Point3
-        //2.3保存位姿
-        stream << col1.x() << " " << col2.x() << " " << col3.x() << " " << t.x() << " "
-               << col1.y() << " " << col2.y() << " " << col3.y() << " " << t.y() << " "
-               << col1.z() << " " << col2.z() << " " << col3.z() << " " << t.z() << std::endl;
-    }
-}
+
 Eigen::Matrix4f H_rot;
 
 Eigen::Matrix4f H;
@@ -412,14 +368,11 @@ int main(int argc, char **argv)
 	ros::NodeHandle nh;
 
 //2)获取配置参数
-    //2.1 save directories 
 	nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move 
 
     pgKITTIformat = save_directory + "optimized_poses.txt";
-    odomKITTIformat = save_directory + "odom_poses.txt";
 
-    // pgG2oSaveStream = std::fstream(save_directory + "singlesession_posegraph.g2o", std::fstream::out);
-
+   
     pgTimeSaveStream = std::fstream(save_directory + "times.txt", std::fstream::out); 
     pgTimeSaveStream.precision(std::numeric_limits<double>::max_digits10);
 
@@ -457,21 +410,12 @@ int main(int argc, char **argv)
 	nh.param<double>("mapviz_filter_size", mapVizFilterSize, 0.4); // pose assignment every k frames 
     downSizeFilterMapPGO.setLeafSize(mapVizFilterSize, mapVizFilterSize, mapVizFilterSize);
 //3)订阅与发布节点
-    //3.1初始化订阅节点
 	ros::Subscriber subVOdometryKey = nh.subscribe<nav_msgs::Odometry>("/orb_slam2_rgbd/Keyframe_odom", 100, VOdKeyHandler);//订阅mapping的位姿估计结果  低频里程计
     ros::Subscriber subVOdometry = nh.subscribe<nav_msgs::Odometry>("/orb_slam2_rgbd/pose_odom", 100, VOHandler);
     
     ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
     ros::Subscriber subLaserOdometryHigh = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init_high_frec", 100, laserOdometryHighHandler);
 
-
-    //3.2初始化发布节点
-	pubOdomAftPGO = nh.advertise<nav_msgs::Odometry>("/aft_pgo_odom", 100);
-	pubOdomRepubVerifier = nh.advertise<nav_msgs::Odometry>("/repub_odom", 100);
-	pubPathAftPGO = nh.advertise<nav_msgs::Path>("/aft_pgo_path", 100);
-	pubMapAftPGO = nh.advertise<sensor_msgs::PointCloud2>("/aft_pgo_map", 100);
-	pubLoopScanLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_scan_local", 100);
-	pubLoopSubmapLocal = nh.advertise<sensor_msgs::PointCloud2>("/loop_submap_local", 100);
 //4)创建线程
 
     std::thread posegraph {pg};
@@ -636,7 +580,6 @@ void pg()
             mBuf.unlock(); 
 
         //1.3重置位姿变量
-            // Early reject by counting local delta movement (for equi-spereated kf drop)
             odom_pose_prev = odom_pose_curr;//重置上一帧位姿
             odom_pose_curr = pose_curr;//重置当前位姿
         //1.4当积累移动或旋转超过阈值，积累量重新置0，选取当前帧为关键帧
@@ -659,7 +602,6 @@ void pg()
             framePoses.push_back(pose_curr);//位姿
             framePosesUpdated.push_back(pose_curr); // init
             frameTimes.push_back(timeLaserOdometryHigh);//位姿数据的时间
-
             //1.9.5解锁
             mKF.unlock(); 
         //1.10
@@ -718,7 +660,6 @@ void pg()
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
                             //2.2.3添加变量
                     initialEstimate.insert(curr_node_idx, poseTo);                
-                    writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
 
                 }
                         //2.3解锁
@@ -749,7 +690,6 @@ void pg()
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
                             //2.2.2添加变量
                     initialEstimate.insert(curr_node_idx, poseTo);                
-                    writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
                             //2.2.3添加keyframe因子
                     
                     gtsam::Pose3 keyrelPose = keyposeFrom.between(keyposeTo);//获取两关键帧间相对运动
@@ -828,11 +768,7 @@ void pg()
             const int curr_node_idx = framePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
                         
             if( ! gtSAMgraphMade ) {
-                 
-                   
                 gtSAMgraphMade = true; 
-
-
             }
                 //2.2当添加过先验节点时 
             else if(isNowKeyFrame==false){ 
@@ -843,8 +779,6 @@ void pg()
                     gtsam::Pose3 relPose = poseFrom.between(poseTo);//获取两关键帧间相对运动
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
                     //initialEstimate.insert(curr_node_idx, poseTo);                
-                    //writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
-
                 }
                 mtxPosegraph.unlock();
         
@@ -871,7 +805,7 @@ void pg()
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
                     std::cout<<"add graph"<<std::endl;
                     //initialEstimate.insert(curr_node_idx, poseTo);                
-                    //writeEdge({prev_node_idx, curr_node_idx}, relPose, edges_str); // giseop
+
                     gtsam::Pose3 keyrelPose = keyposeFrom.between(keyposeTo);//获取两关键帧间相对运动
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_key_node_idx, curr_node_idx, keyrelPose, odomNoise));
                     std::cout<<"key graph"<<std::endl;
