@@ -558,12 +558,7 @@ void pg()
                     std::cout<<"init over"<<std::endl;
                 }
             }
-            
-        //1.1时间同步
-            //1.1.1上锁
 			mBuf.lock();
-        //1.2从缓存中取出数据
-            //1.2.1获取两个数据的时间
             timeLaserOdometryHigh = odometryHighBuf.front()->header.stamp.toSec();
             
             if(odometryBuf.size()>0){
@@ -572,18 +567,11 @@ void pg()
             }
             std::cout<<"odo:"<<odometryBuf.size()<<" time:"<<timeLaserOdometry<<std::endl;
             std::cout<<"odoHigh："<<odometryHighBuf.size()<<" time:"<<timeLaserOdometryHigh<<std::endl;
-
-            //1.2.2获取数据
-                //2.2获取位姿
             Pose6D pose_curr = getOdom(odometryHighBuf.front());//mapping坐标系 世界坐标
             odometryHighBuf.pop();
             mBuf.unlock(); 
-
-        //1.3重置位姿变量
             odom_pose_prev = odom_pose_curr;//重置上一帧位姿
             odom_pose_curr = pose_curr;//重置当前位姿
-        //1.4当积累移动或旋转超过阈值，积累量重新置0，选取当前帧为关键帧
-            //1.4.1关键帧判断
             if(timeLaserOdometry==timeLaserOdometryHigh) {
                 isNowKeyFrame = true;
 
@@ -595,31 +583,23 @@ void pg()
             } else {
                 isNowKeyFrame = false;
             }
-        //1.9关键帧数据存入向量
-            //1.9.1上锁
             mKF.lock(); 
-            //1.9.2存入数据
             framePoses.push_back(pose_curr);//位姿
             framePosesUpdated.push_back(pose_curr); // init
             frameTimes.push_back(timeLaserOdometryHigh);//位姿数据的时间
             //1.9.5解锁
             mKF.unlock(); 
-        //1.10
-            //1.10.1获取上一帧和当前帧在向量中的索引
             const int prev_node_idx = framePoses.size() - 2; 
             const int curr_node_idx = framePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
                         
-            //1.10.2添加因子
-                //2.1当没有添加先验节点时
             if( ! gtSAMgraphMade /* prior node */) {
                     //2.1.1创建先验因子
                 const int init_node_idx = 0; 
                 gtsam::Pose3 poseOrigin = Pose6DtoGTSAMPose3(framePoses.at(init_node_idx));
                 // auto poseOrigin = gtsam::Pose3(gtsam::Rot3::RzRyRx(0.0, 0.0, 0.0), gtsam::Point3(0.0, 0.0, 0.0));
-                    //2.1.2添加因子图
-                        //2.1上锁
+    
                 mtxPosegraph.lock();
-                        //2.2添加先验因子
+
                 {
                     // prior factor 
                             //2.2.1添加因子
