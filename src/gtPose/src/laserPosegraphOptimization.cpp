@@ -164,6 +164,23 @@ gtsam::Pose3 Pose6DtoGTSAMPose3(const Pose6D& p)
 } // Pose6DtoGTSAMPose3
 
 
+Pose6D diffTransformation(const Pose6D& _p1, const Pose6D& _p2)
+{
+    //1.将pose6D格式转为Affine3f格式
+    Eigen::Affine3f SE3_p1 = pcl::getTransformation(_p1.x, _p1.y, _p1.z, _p1.roll, _p1.pitch, _p1.yaw);
+    Eigen::Affine3f SE3_p2 = pcl::getTransformation(_p2.x, _p2.y, _p2.z, _p2.roll, _p2.pitch, _p2.yaw);
+    //2.将获取两帧之间的相对运动
+    Eigen::Matrix4f SE3_delta0 = SE3_p1.matrix().inverse() * SE3_p2.matrix();
+    Eigen::Affine3f SE3_delta; 
+    SE3_delta.matrix() = SE3_delta0;
+    //3.通过仿射矩阵获取位姿
+    float dx, dy, dz, droll, dpitch, dyaw;
+    pcl::getTranslationAndEulerAngles (SE3_delta, dx, dy, dz, droll, dpitch, dyaw);
+    // std::cout << "delta : " << dx << ", " << dy << ", " << dz << ", " << droll << ", " << dpitch << ", " << dyaw << std::endl;
+    //4.输出相对位姿
+    return Pose6D{double(abs(dx)), double(abs(dy)), double(abs(dz)), double(abs(droll)), double(abs(dpitch)), double(abs(dyaw))};
+} // SE3Diff
+
 
 Eigen::Matrix4f H_rot;
 
@@ -363,11 +380,10 @@ void gs_opt(void);
 
 int main(int argc, char **argv)
 {
-//1)初始化ROS节点
 	ros::init(argc, argv, "laserPGO");
 	ros::NodeHandle nh;
 
-//2)获取配置参数
+
 	nh.param<std::string>("save_directory", save_directory, "/"); // pose assignment every k m move 
 
     pgKITTIformat = save_directory + "optimized_poses.txt";
@@ -454,7 +470,6 @@ void gs_opt(void){
             gtsam::GaussNewtonParams parameters;
             gtsam::GaussNewtonOptimizer optimizer(gtSAMgraph, initialEstimate, parameters);
             gtsam::Values results = optimizer.optimize();
-
             results.print("Final Result:\n");
             //isamCurrentEstimate.print("Final Result:\n");
             cout << "optimization over..." << endl;
@@ -481,8 +496,8 @@ void isam_opt(void)
         if( gtSAMgraphMade && (odometryHighBuf.size()==0)&&(VOBuf.size())==0 ) {
             //2.2.1上锁
             mtxPosegraph.lock();
-            initialEstimate.print("\nInitial Values:\n");
-            //gtSAMgraph.print("\nFactor Graph:\n");
+            //initialEstimate.print("\nInitial Values:\n");
+            gtSAMgraph.print("\nFactor Graph:\n");
             //2.2.2优化
             runopt();
             //isamCurrentEstimate.print("Final Result:\n");
@@ -559,77 +574,70 @@ void pg()
                 }
             }
             
-        //1.1时间同步
-            //1.1.1上锁
 			mBuf.lock();
-        //1.2从缓存中取出数据
-            //1.2.1获取两个数据的时间
+
             timeLaserOdometryHigh = odometryHighBuf.front()->header.stamp.toSec();
             
             if(odometryBuf.size()>0){
                 std::cout<<"mapBuf >0"<<std::endl;
                 timeLaserOdometry = odometryBuf.front()->header.stamp.toSec();
             }
+
             std::cout<<"odo:"<<odometryBuf.size()<<" time:"<<timeLaserOdometry<<std::endl;
             std::cout<<"odoHigh："<<odometryHighBuf.size()<<" time:"<<timeLaserOdometryHigh<<std::endl;
-
-            //1.2.2获取数据
-                //2.2获取位姿
             Pose6D pose_curr = getOdom(odometryHighBuf.front());//mapping坐标系 世界坐标
             odometryHighBuf.pop();
             mBuf.unlock(); 
 
-        //1.3重置位姿变量
             odom_pose_prev = odom_pose_curr;//重置上一帧位姿
             odom_pose_curr = pose_curr;//重置当前位姿
-        //1.4当积累移动或旋转超过阈值，积累量重新置0，选取当前帧为关键帧
-            //1.4.1关键帧判断
-            if(timeLaserOdometry==timeLaserOdometryHigh) {
-                isNowKeyFrame = true;
 
-                Pose6D keypose_curr=getOdom(odometryBuf.front());
-                keyframePoses.push_back(keypose_curr);//位姿
-                keyframePosesUpdated.push_back(keypose_curr); // init
-                keyframeTimes.push_back(timeLaserOdometry);//位姿数据的时间
-
+            Pose6D dtf = diffTransformation(odom_pose_prev, odom_pose_curr); // dtf means delta_transform
+            double delta_translation = sqrt(dtf.x*dtf.x + dtf.y*dtf.y + dtf.z*dtf.z); // note: absolute value. 
+            translationAccumulated += delta_translation;
+            rotaionAccumulated += (dtf.roll + dtf.pitch + dtf.yaw);
+            std::cout<<"-----------------------"<<std::endl;
+            if((timeLaserOdometry==timeLaserOdometryHigh)) {
+                std::cout<<"key p"<<std::endl;
+                std::cout<<"model"<<(!gtSAMgraphMade)<<std::endl;
+                std::cout<<"translationAccumulated"<<translationAccumulated<<std::endl;
+                std::cout<<"keyframeMeterGap"<<keyframeMeterGap<<std::endl;
+                std::cout<<"rotaionAccumulated"<<rotaionAccumulated<<std::endl;
+                std::cout<<"keyframeRadGap"<<keyframeRadGap<<std::endl;
+                std::cout<<"T:"<<(translationAccumulated > keyframeMeterGap || rotaionAccumulated > keyframeRadGap) <<std::endl;
+                std::cout<<"LAST"<<((translationAccumulated > keyframeMeterGap || rotaionAccumulated > keyframeRadGap) || (!gtSAMgraphMade))<<std::endl;
+                if((translationAccumulated > keyframeMeterGap || rotaionAccumulated > keyframeRadGap) || (!gtSAMgraphMade) ){
+                    std::cout<<"key laser odo "<<std::endl;
+                    isNowKeyFrame = true;
+                    translationAccumulated = 0.0; // reset 
+                    rotaionAccumulated = 0.0; // reset 
+                    Pose6D keypose_curr=getOdom(odometryBuf.front());
+                    keyframePoses.push_back(keypose_curr);//位姿
+                    keyframePosesUpdated.push_back(keypose_curr); // init
+                    keyframeTimes.push_back(timeLaserOdometry);//位姿数据的时间
+                }
+                odometryBuf.pop();
             } else {
                 isNowKeyFrame = false;
             }
-        //1.9关键帧数据存入向量
-            //1.9.1上锁
             mKF.lock(); 
-            //1.9.2存入数据
-            framePoses.push_back(pose_curr);//位姿
-            framePosesUpdated.push_back(pose_curr); // init
-            frameTimes.push_back(timeLaserOdometryHigh);//位姿数据的时间
-            //1.9.5解锁
+            framePoses.push_back(pose_curr);
+            framePosesUpdated.push_back(pose_curr); 
+            frameTimes.push_back(timeLaserOdometryHigh);
             mKF.unlock(); 
-        //1.10
-            //1.10.1获取上一帧和当前帧在向量中的索引
             const int prev_node_idx = framePoses.size() - 2; 
             const int curr_node_idx = framePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
                         
-            //1.10.2添加因子
-                //2.1当没有添加先验节点时
             if( ! gtSAMgraphMade /* prior node */) {
-                    //2.1.1创建先验因子
                 const int init_node_idx = 0; 
                 gtsam::Pose3 poseOrigin = Pose6DtoGTSAMPose3(framePoses.at(init_node_idx));
                 // auto poseOrigin = gtsam::Pose3(gtsam::Rot3::RzRyRx(0.0, 0.0, 0.0), gtsam::Point3(0.0, 0.0, 0.0));
-                    //2.1.2添加因子图
-                        //2.1上锁
                 mtxPosegraph.lock();
-                        //2.2添加先验因子
                 {
-                    // prior factor 
-                            //2.2.1添加因子
                     gtSAMgraph.add(gtsam::PriorFactor<gtsam::Pose3>(init_node_idx, poseOrigin, priorNoise));
-                            //2.2.2添加变量
                     initialEstimate.insert(init_node_idx, poseOrigin);       
                 }   
-                        //2.3解锁
                 mtxPosegraph.unlock();
-                        //2.4状态置为True
                 gtSAMgraphMade = true; 
                 cout << "posegraph prior node " << init_node_idx << " added" << endl;
                 
@@ -699,7 +707,7 @@ void pg()
                 }
                         //2.3解锁
                 mtxPosegraph.unlock();
-                odometryBuf.pop();
+                
                 std::chrono::milliseconds dura(20);
                 std::this_thread::sleep_for(dura);
             }
@@ -717,7 +725,7 @@ void pg()
         keyframeTimes.clear();
         if(VOBuf.size()>0){
             gtSAMgraphMade=false;
-            std::cout<<"VO begin----------"<<std::endl;
+            std::cout<<"VO begin----------------------------------------------------------------------"<<std::endl;
         }
        
         while ( VOBuf.size()>0)

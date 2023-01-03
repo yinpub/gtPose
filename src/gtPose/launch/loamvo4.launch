@@ -1,8 +1,7 @@
 <launch>
-    <param name="seq" type="int" value="8" />
-    <param name="save_directory" type="string" value="/home/y/evo/ev_ki/fusion/08/"/>  
+    <param name="seq" type="int" value="9" />
+    <param name="save_directory" type="string" value="/home/y/evo/ev_ki/fusion1/09/"/>  
     <node pkg="gtPose" type="alaserPGO" name="alaserPGO" output="screen" /> 
-
 
     <node pkg="rviz" type="rviz" name="rviz" args="-d $(find orb_slam2_ros)/ros/config/rviz_config.rviz" />
     <node pkg="hector_trajectory_server" type="hector_trajectory_server" name="trajectory_server_orb_slam2" output="screen" ns="orb_slam2_ros" >
