@@ -205,7 +205,7 @@ void saveOptimizedVerticesKITTIformat(gtsam::Values _estimates, std::string _fil
             col1.z() , col2.z() , col3.z() , t.z(),
             0,0,0,1;
 
-        H=H_rot*H;
+        H=H_rot*H*H_rot.inverse();
 
         // stream << col1.x() << " " << col2.x() << " " << col3.x() << " " << t.x() << " "
         //        << col1.y() << " " << col2.y() << " " << col3.y() << " " << t.y() << " "
