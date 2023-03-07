@@ -410,15 +410,17 @@ int main(int argc, char **argv)
 	nh.param<double>("mapviz_filter_size", mapVizFilterSize, 0.4); // pose assignment every k frames 
     downSizeFilterMapPGO.setLeafSize(mapVizFilterSize, mapVizFilterSize, mapVizFilterSize);
 //3)订阅与发布节点
+	//视觉结果 subVOdometryKey代表关键帧。
 	ros::Subscriber subVOdometryKey = nh.subscribe<nav_msgs::Odometry>("/orb_slam2_rgbd/Keyframe_odom", 100, VOdKeyHandler);//订阅mapping的位姿估计结果  低频里程计
     ros::Subscriber subVOdometry = nh.subscribe<nav_msgs::Odometry>("/orb_slam2_rgbd/pose_odom", 100, VOHandler);
-    
+    //激光结果 subLaserOdometry代表关键帧
     ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 100, laserOdometryHandler);
     ros::Subscriber subLaserOdometryHigh = nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init_high_frec", 100, laserOdometryHighHandler);
 
 //4)创建线程
-
+	//posegraph构建
     std::thread posegraph {pg};
+	//posegarph优化
     std::thread optimize {isam_opt};
     //std::thread optimize {gs_opt};
 //5)触发回调
@@ -529,7 +531,7 @@ void pg()
     else if (sequencenum==9){
         picnum=1590;
     }
-    
+   //---------------检测约束数量
     while (odometryHighBuf.size()<picnum||VOBuf.size()<picnum)
     {
         std::cout<<"picnum"<<picnum<<std::endl;
@@ -550,6 +552,7 @@ void pg()
         //loam部分
 		while ( odometryHighBuf.size()>0)
         {
+	//初始化
             while (!systemInit)
             {
                 std::cout<<"init begin"<<std::endl;
@@ -567,11 +570,13 @@ void pg()
             }
             std::cout<<"odo:"<<odometryBuf.size()<<" time:"<<timeLaserOdometry<<std::endl;
             std::cout<<"odoHigh："<<odometryHighBuf.size()<<" time:"<<timeLaserOdometryHigh<<std::endl;
-            Pose6D pose_curr = getOdom(odometryHighBuf.front());//mapping坐标系 世界坐标
+            
+			Pose6D pose_curr = getOdom(odometryHighBuf.front());//mapping坐标系 世界坐标
             odometryHighBuf.pop();
             mBuf.unlock(); 
             odom_pose_prev = odom_pose_curr;//重置上一帧位姿
             odom_pose_curr = pose_curr;//重置当前位姿
+			//判断当前帧有没有对应的关键帧
             if(timeLaserOdometry==timeLaserOdometryHigh) {
                 isNowKeyFrame = true;
 
@@ -591,7 +596,7 @@ void pg()
             mKF.unlock(); 
             const int prev_node_idx = framePoses.size() - 2; 
             const int curr_node_idx = framePoses.size() - 1; // becuase cpp starts with 0 (actually this index could be any number, but for simple implementation, we follow sequential indexing)
-                        
+             //第一帧          
             if( ! gtSAMgraphMade /* prior node */) {
                     //2.1.1创建先验因子
                 const int init_node_idx = 0; 
@@ -625,7 +630,7 @@ void pg()
                 std::this_thread::sleep_for(dura);
 
             }
-                //2.2当添加过先验节点时 
+                //2.2当添加过先验节点时，添加没有关键帧的普通帧
             else if(isNowKeyFrame==false){ 
                     //2.2.1从向量中取出位姿
                 gtsam::Pose3 poseFrom = Pose6DtoGTSAMPose3(framePoses.at(prev_node_idx));//上一关键帧位姿
@@ -640,15 +645,13 @@ void pg()
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_node_idx, curr_node_idx, relPose, odomNoise));
                             //2.2.3添加变量
                     initialEstimate.insert(curr_node_idx, poseTo);                
-
                 }
                         //2.3解锁
                 mtxPosegraph.unlock();
-        
                 cout << "posegraph odom node " << curr_node_idx << " added." << endl;
             }
             // if want to print the current graph, use gtSAMgraph.print("\nFactor Graph:\n");
-                //当是关键帧的时候
+                //当普通帧有对应的关键帧时
             else{
                 std::cout<<"add key frame!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<std::endl;
                 const int prev_keynode_idx = keyframePoses.size() - 2; 
@@ -671,7 +674,7 @@ void pg()
                             //2.2.2添加变量
                     initialEstimate.insert(curr_node_idx, poseTo);                
                             //2.2.3添加keyframe因子
-                    
+                 
                     gtsam::Pose3 keyrelPose = keyposeFrom.between(keyposeTo);//获取两关键帧间相对运动
                     gtSAMgraph.add(gtsam::BetweenFactor<gtsam::Pose3>(prev_key_node_idx, curr_node_idx, keyrelPose, odomNoise));
                     prev_key_node_idx=curr_node_idx;
@@ -699,7 +702,7 @@ void pg()
             gtSAMgraphMade=false;
             std::cout<<"VO begin----------"<<std::endl;
         }
-       
+       //--------视觉关键帧
         while ( VOBuf.size()>0)
         {
  
